@@ -1,0 +1,8 @@
+[package]
+name = "party-saver"
+version = "0.1.0"
+edition = "2021"
+authors = ["Will Cassella <will@willcassella.com>"]
+
+[dependencies]
+midir = "0.9"
