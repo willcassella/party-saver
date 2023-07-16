@@ -10,6 +10,7 @@ const DEVICE_CHANNEL: u8 = 0xF;
 const FAKE_BUTTON_UP_CHANNEL: u8 = 0xE;
 const FAKE_BUTTON_DOWN_CHANNEL: u8 = 0xD;
 const FILTER_ENCODER_CHANNEL: u8 = 0xC;
+const TEMPO_ENCODER_CHANNEL:u8 = 0xB;
 
 const NOTE_OFF: u8 = 0x80;
 const NOTE_ON: u8 = 0x90;
@@ -20,6 +21,7 @@ const HEADPHONE_VOLUME_CC: u8 = 21;
 const DECK1_LOOP_CC: u8 = 1;
 const DECK2_LOOP_CC: u8 = 2;
 const DECK3_LOOP_CC: u8 = 0;
+const MASTER_VOLUME_CC: u8 = 3;
 
 // Inputs for filter controls.
 const FILTER_CC: u8 = 15;
@@ -31,6 +33,17 @@ const DECK3_FILTER_TOGGLE_NOTE: u8 = 0x28;
 const DECK1_FILTER_CC: u8 = 1;
 const DECK2_FILTER_CC: u8 = 2;
 const DECK3_FILTER_CC: u8 = 0;
+
+// Inputs for tempo controls.
+const TEMPO_CC: u8 = 19;
+const DECK1_TEMPO_TOGGLE_NOTE: u8 = 0x23;
+const DECK2_TEMPO_TOGGLE_NOTE: u8 = 0x1F;
+const DECK3_TEMPO_TOGGLE_NOTE: u8 = 0x27;
+
+// Fake outputs for tempo controls.
+const DECK1_TEMPO_CC: u8 = 1;
+const DECK2_TEMPO_CC: u8 = 2;
+const DECK3_TEMPO_CC: u8 = 0;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -177,10 +190,83 @@ impl Default for FilterEncoder {
     }
 }
 
+struct TempoEncoder {
+    deck_index: usize,
+    deck1_value: u8,
+    deck2_value: u8,
+    deck3_value: u8,
+    prev_value: u8,
+}
+
+impl TempoEncoder {
+    fn select_deck(&mut self, note: u8, color_out: &mut MidiOutputConnection) -> Result<bool> {
+        let toggle_notes = [
+            DECK1_TEMPO_TOGGLE_NOTE,
+            DECK2_TEMPO_TOGGLE_NOTE,
+            DECK3_TEMPO_TOGGLE_NOTE,
+        ];
+
+        if let Some(i) = toggle_notes.iter().position(|&x| x == note) {
+            self.deck_index = i;
+
+            // Toggle lights for other decks.
+            for x in toggle_notes {
+                let message = if x == note {
+                    NOTE_ON
+                } else {
+                    NOTE_OFF
+                };
+
+                color_out.send(&[DEVICE_CHANNEL | message, x, 127])?;
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn adjust(&mut self, data: u8, out: &mut MidiOutputConnection) -> Result<()> {
+        let (cc, deck_value) = match self.deck_index {
+            0 => (DECK1_TEMPO_CC, &mut self.deck1_value),
+            1 => (DECK2_TEMPO_CC, &mut self.deck2_value),
+            2 => (DECK3_TEMPO_CC, &mut self.deck3_value),
+            _ => return Err("INTERNAL ERROR: Tempo deck index out of range".into()),
+        };
+
+        // Pickup algorithm: Don't do anything until the new value has passed the stored value.
+        let prev_sign = (*deck_value).cmp(&self.prev_value);
+        self.prev_value = data;
+        if (*deck_value).cmp(&data) == prev_sign {
+            return Ok(());
+        }
+        *deck_value = data;
+
+        // Inverting the value of this, since I'm used to the Rekordbox controls where up =
+        // slower, down = faster.
+        log_send(TEMPO_ENCODER_CHANNEL, CONTROL_CHANGE, cc, 127 - data, out)?;
+
+        Ok(())
+    }
+}
+
+impl Default for TempoEncoder {
+    fn default() -> Self {
+        Self {
+            deck_index: 0,
+            deck1_value: 63,
+            deck2_value: 63,
+            deck3_value: 63,
+            prev_value: 63,
+        }
+    }
+}
+
 struct State {
     headphones_mix: FakePotEncoder,
     headphones_volume: FakePotEncoder,
+    master_volume: FakePotEncoder,
     filter_encoder: FilterEncoder,
+    tempo_encoder: TempoEncoder,
 }
 
 impl State {
@@ -188,7 +274,9 @@ impl State {
         Self {
             headphones_mix: FakePotEncoder::default(),
             headphones_volume: FakePotEncoder::default(),
+            master_volume: FakePotEncoder::default(),
             filter_encoder: FilterEncoder::default(),
+            tempo_encoder: TempoEncoder::default(),
         }
     }
 
@@ -212,6 +300,8 @@ impl State {
                         .toggle(message[1], state, out, color_out)?
                     {
                         return Ok(());
+                    } else if self.tempo_encoder.select_deck(message[1], color_out)? {
+                        return Ok(());
                     } else {
                         return handle_button(message[1], message[2], out);
                     }
@@ -230,12 +320,17 @@ impl State {
         let pot_encoder = match cc {
             HEADPHONE_MIX_CC => &mut self.headphones_mix,
             HEADPHONE_VOLUME_CC => &mut self.headphones_volume,
+            MASTER_VOLUME_CC => &mut self.master_volume,
             DECK1_LOOP_CC | DECK2_LOOP_CC | DECK3_LOOP_CC => {
                 handle_fake_button(cc, data, out)?;
                 return Ok(true);
             }
             FILTER_CC => {
                 self.filter_encoder.adjust(data, out)?;
+                return Ok(true);
+            }
+            TEMPO_CC => {
+                self.tempo_encoder.adjust(data, out)?;
                 return Ok(true);
             }
             _ => return Ok(false),
