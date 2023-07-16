@@ -10,7 +10,7 @@ const DEVICE_CHANNEL: u8 = 0xF;
 const FAKE_BUTTON_UP_CHANNEL: u8 = 0xE;
 const FAKE_BUTTON_DOWN_CHANNEL: u8 = 0xD;
 const FILTER_ENCODER_CHANNEL: u8 = 0xC;
-const TEMPO_ENCODER_CHANNEL:u8 = 0xB;
+const TEMPO_ENCODER_CHANNEL: u8 = 0xB;
 
 const NOTE_OFF: u8 = 0x80;
 const NOTE_ON: u8 = 0x90;
@@ -39,11 +39,15 @@ const TEMPO_CC: u8 = 19;
 const DECK1_TEMPO_TOGGLE_NOTE: u8 = 0x23;
 const DECK2_TEMPO_TOGGLE_NOTE: u8 = 0x1F;
 const DECK3_TEMPO_TOGGLE_NOTE: u8 = 0x27;
+const PB_DOWN_IN_NOTE: u8 = 0x0C;
+const PB_UP_IN_NOTE: u8 = 0x0F;
 
 // Fake outputs for tempo controls.
 const DECK1_TEMPO_CC: u8 = 1;
 const DECK2_TEMPO_CC: u8 = 2;
 const DECK3_TEMPO_CC: u8 = 0;
+const PB_DOWN_OUT_NOTE_BASE: u8 = 1;
+const PB_UP_OUT_NOTE_BASE: u8 = 4;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -211,11 +215,7 @@ impl TempoEncoder {
 
             // Toggle lights for other decks.
             for x in toggle_notes {
-                let message = if x == note {
-                    NOTE_ON
-                } else {
-                    NOTE_OFF
-                };
+                let message = if x == note { NOTE_ON } else { NOTE_OFF };
 
                 color_out.send(&[DEVICE_CHANNEL | message, x, 127])?;
             }
@@ -246,6 +246,31 @@ impl TempoEncoder {
         log_send(TEMPO_ENCODER_CHANNEL, CONTROL_CHANGE, cc, 127 - data, out)?;
 
         Ok(())
+    }
+
+    fn handle_button(
+        &self,
+        note: u8,
+        state: bool,
+        out: &mut MidiOutputConnection,
+        color_out: &mut MidiOutputConnection,
+    ) -> Result<bool> {
+        let out_note = match note {
+            PB_UP_IN_NOTE => PB_UP_OUT_NOTE_BASE,
+            PB_DOWN_IN_NOTE => PB_DOWN_OUT_NOTE_BASE,
+            _ => return Ok(false),
+        } + self.deck_index as u8;
+
+        // Send the fake note to rekordbox, and the color to the device.
+        if state {
+            color_out.send(&[DEVICE_CHANNEL | NOTE_ON, note, 127])?;
+            log_send(TEMPO_ENCODER_CHANNEL, NOTE_ON, out_note, 127, out)?;
+        } else {
+            color_out.send(&[DEVICE_CHANNEL | NOTE_OFF, note, 127])?;
+            log_send(TEMPO_ENCODER_CHANNEL, NOTE_ON, out_note, 0, out)?;
+        }
+
+        Ok(true)
     }
 }
 
@@ -300,11 +325,20 @@ impl State {
                         .toggle(message[1], state, out, color_out)?
                     {
                         return Ok(());
-                    } else if self.tempo_encoder.select_deck(message[1], color_out)? {
-                        return Ok(());
-                    } else {
-                        return handle_button(message[1], message[2], out);
                     }
+
+                    if self.tempo_encoder.select_deck(message[1], color_out)? {
+                        return Ok(());
+                    }
+
+                    if self
+                        .tempo_encoder
+                        .handle_button(message[1], state, out, color_out)?
+                    {
+                        return Ok(());
+                    }
+
+                    return handle_button(message[1], message[2], out);
                 }
                 _ => (),
             }
