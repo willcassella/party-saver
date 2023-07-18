@@ -7,6 +7,7 @@ In particular, it gets confused by the distinction between the `NOTE ON` and `NO
 
 ## Features
 - Allows using the continuous encoders to emulate rotary potentiometer encoders.
+- Allows using the continous encoders to emulate distinct buttons for clockwise/counter-clockwise motion.
 - Allows multiplexing the rotary potentiometers for FX controls, and using switches for channel-masking.
 - Allows multiplexing (and inverting) the fourth linear fader as a tempo fader, with deck-switching and soft pickup.
 
